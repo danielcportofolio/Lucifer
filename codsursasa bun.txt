@@ -1,0 +1,526 @@
+package main
+
+import (
+	"database/sql"
+	"encoding/json"
+	"log"
+	"net/http"
+	"strconv"
+	"time"
+
+	"github.com/gorilla/mux"
+	_ "github.com/lib/pq"
+)
+
+// User represents a user entity
+type User struct {
+	ID        int    `json:"id"`
+	TagName   string `json:"tag_name"`
+	AvatarURL string `json:"avatar_url"`
+	
+}
+
+// Chat represents a chat entity
+type Chat struct {
+	ID       int        `json:"id"`
+	UserID1  int        `json:"user_id_1"`
+	UserID2  int        `json:"user_id_2"`
+	Messages []Message  `json:"messages"`
+}
+
+// Message represents a chat message entity
+type Message struct {
+	ID          int         `json:"id"`
+	UserID      int         `json:"user_id"`
+	Message     string      `json:"message"`
+	Attachments []Attachment `json:"attachments"`
+	CreatedAt   time.Time   `json:"created_at"`
+}
+
+// Attachment represents an attachment entity
+type Attachment struct {
+	Type string `json:"type"`
+	URL  string `json:"url"`
+}
+
+// Notification represents a notification entity
+type Notification struct {
+	ID        int       `json:"id"`
+	UserID    int       `json:"user_id"`
+	Message   string    `json:"message"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// Item represents an item entity
+type Item struct {
+	ID          int    `json:"id"`
+	Name        string `json:"name"`
+	Description string `json:"description"`
+	ImageURL    string `json:"image_url"`
+	TaskID      int    `json:"task_id"`
+}
+
+var (
+	users         []User
+	chats         []Chat
+	notifications []Notification
+	items         []Item
+)
+
+var DB *sql.DB
+
+func main() {
+	db, err := sql.Open("postgres", "postgresql://postgres:Asdqwe123@localhost/api_database?sslmode=disable")
+	if err != nil {
+		log.Fatal(err)
+	}
+	defer db.Close()
+
+	err = db.Ping()
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	DB = db
+
+	initDB()
+
+
+	router := mux.NewRouter()
+
+	router.HandleFunc("/users", createUser).Methods("POST")
+	router.HandleFunc("/users/{user_id}", getUser).Methods("GET")
+	router.HandleFunc("/users/{user_id}", updateUser).Methods("PUT")
+	router.HandleFunc("/users/{user_id}", deleteUser).Methods("DELETE")
+
+	router.HandleFunc("/chats", createChat).Methods("POST")
+	router.HandleFunc("/chats/{chat_id}", getChat).Methods("GET")
+	router.HandleFunc("/chats", getChatsForUser).Methods("GET")
+	router.HandleFunc("/chats/{chat_id}/messages", sendMessage).Methods("POST")
+
+	router.HandleFunc("/notifications", getNotificationsForUser).Methods("GET")
+	router.HandleFunc("/notifications/{notification_id}", deleteNotification).Methods("DELETE")
+
+	router.HandleFunc("/items", createItem).Methods("POST")
+	router.HandleFunc("/items/{item_id}", getItem).Methods("GET")
+	router.HandleFunc("/items/{item_id}", updateItem).Methods("PUT")
+
+	//router.HandleFunc("/auth/login", login).Methods("POST")
+	//router.HandleFunc("/auth/verify", verify).Methods("POST")
+	//router.HandleFunc("/auth/refresh", refresh).Methods("POST")
+
+
+
+	log.Fatal(http.ListenAndServe(":8080", router))
+}
+
+func initDB() {
+	_, err := DB.Exec(`
+		CREATE TABLE IF NOT EXISTS users (
+			id SERIAL PRIMARY KEY,
+			tag_name VARCHAR(255) NOT NULL,
+			avatar_url VARCHAR(255)
+		);
+
+		CREATE TABLE IF NOT EXISTS chats (
+			id SERIAL PRIMARY KEY,
+			user_id_1 INTEGER NOT NULL,
+			user_id_2 INTEGER NOT NULL
+		);
+
+		CREATE TABLE IF NOT EXISTS messages (
+			id SERIAL PRIMARY KEY,
+			chat_id INTEGER NOT NULL,
+			user_id INTEGER NOT NULL,
+			message TEXT,
+			attachments JSONB,
+			created_at TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS notifications (
+			id SERIAL PRIMARY KEY,
+			user_id INTEGER NOT NULL,
+			message TEXT,
+			created_at TIMESTAMP
+		);
+
+		CREATE TABLE IF NOT EXISTS items (
+			id SERIAL PRIMARY KEY,
+			name VARCHAR(255) NOT NULL,
+			description TEXT,
+			image_url VARCHAR(255),
+			task_id INTEGER
+		);
+	`)
+	if err != nil {
+		log.Fatal(err)
+	}
+}
+
+
+
+
+
+func createUser(w http.ResponseWriter, r *http.Request) {
+	var user User
+	err := json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var userID int
+	err = DB.QueryRow("INSERT INTO users (tag_name, avatar_url) VALUES ($1, $2) RETURNING id", user.TagName, user.AvatarURL).Scan(&userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	user.ID = userID
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+func getUser(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	userID, err := strconv.Atoi(params["user_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var user User
+	err = DB.QueryRow("SELECT id, tag_name, avatar_url FROM users WHERE id = $1", userID).Scan(&user.ID, &user.TagName, &user.AvatarURL)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+
+func updateUser(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	userID, err := strconv.Atoi(params["user_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var user User
+	err = json.NewDecoder(r.Body).Decode(&user)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = DB.Exec("UPDATE users SET tag_name = $1, avatar_url = $2 WHERE id = $3",
+		user.TagName, user.AvatarURL, userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	user.ID = userID
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(user)
+}
+
+
+func deleteUser(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	userID, err := strconv.Atoi(params["user_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = DB.Exec("DELETE FROM users WHERE id = $1", userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+
+func createChat(w http.ResponseWriter, r *http.Request) {
+	var chat Chat
+	err := json.NewDecoder(r.Body).Decode(&chat)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var chatID int
+	err = DB.QueryRow("INSERT INTO chats (user_id_1, user_id_2) VALUES ($1, $2) RETURNING id", chat.UserID1, chat.UserID2).Scan(&chatID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	chat.ID = chatID
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(chat)
+}
+
+func getChat(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	chatID, err := strconv.Atoi(params["chat_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var chat Chat
+	err = DB.QueryRow("SELECT id, user_id_1, user_id_2 FROM chats WHERE id = $1", chatID).Scan(&chat.ID, &chat.UserID1, &chat.UserID2)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Retrieve messages for the chat from the messages table
+	rows, err := DB.Query("SELECT id, user_id, message, attachments, created_at FROM messages WHERE chat_id = $1", chatID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	for rows.Next() {
+		var message Message
+		err := rows.Scan(&message.ID, &message.UserID, &message.Message, &message.Attachments, &message.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		chat.Messages = append(chat.Messages, message)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(chat)
+}
+
+func getChatsForUser(w http.ResponseWriter, r *http.Request) {
+	userIDStr := r.URL.Query().Get("user_id")
+	userID, err := strconv.Atoi(userIDStr)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rows, err := DB.Query("SELECT id, user_id_1, user_id_2 FROM chats WHERE user_id_1 = $1 OR user_id_2 = $1", userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var chats []Chat
+
+	for rows.Next() {
+		var chat Chat
+		err := rows.Scan(&chat.ID, &chat.UserID1, &chat.UserID2)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+
+		// Retrieve messages for the chat from the messages table
+		msgRows, err := DB.Query("SELECT id, user_id, message, attachments, created_at FROM messages WHERE chat_id = $1", chat.ID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		defer msgRows.Close()
+
+		for msgRows.Next() {
+			var message Message
+			err := msgRows.Scan(&message.ID, &message.UserID, &message.Message, &message.Attachments, &message.CreatedAt)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			chat.Messages = append(chat.Messages, message)
+		}
+
+		chats = append(chats, chat)
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(chats)
+}
+
+
+func sendMessage(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	chatID, err := strconv.Atoi(params["chat_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var message Message
+	err = json.NewDecoder(r.Body).Decode(&message)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	// Insert the message into the database
+	result, err := DB.Exec("INSERT INTO messages (chat_id, user_id, message, attachments, created_at) VALUES ($1, $2, $3, $4, $5)",
+		chatID, message.UserID, message.Message, message.Attachments, time.Now())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Get the ID of the inserted message
+	messageID, err := result.LastInsertId()
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	// Fetch the newly inserted message from the database
+	err = DB.QueryRow("SELECT id, user_id, message, attachments, created_at FROM messages WHERE id = $1", messageID).
+		Scan(&message.ID, &message.UserID, &message.Message, &message.Attachments, &message.CreatedAt)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(message)
+}
+
+
+
+func getNotificationsForUser(w http.ResponseWriter, r *http.Request) {
+	userID, err := strconv.Atoi(r.URL.Query().Get("user_id"))
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	rows, err := DB.Query("SELECT id, user_id, message, created_at FROM notifications WHERE user_id = $1", userID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	defer rows.Close()
+
+	var notifications []Notification
+	for rows.Next() {
+		var notification Notification
+		err := rows.Scan(&notification.ID, &notification.UserID, &notification.Message, &notification.CreatedAt)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		notifications = append(notifications, notification)
+	}
+
+	if err := rows.Err(); err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(notifications)
+}
+
+func deleteNotification(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	notificationID, err := strconv.Atoi(params["notification_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = DB.Exec("DELETE FROM notifications WHERE id = $1", notificationID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+
+func createItem(w http.ResponseWriter, r *http.Request) {
+	var item Item
+	err := json.NewDecoder(r.Body).Decode(&item)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var itemID int
+	err = DB.QueryRow("INSERT INTO items (name, description, image_url, task_id) VALUES ($1, $2, $3, $4) RETURNING id", item.Name, item.Description, item.ImageURL, item.TaskID).Scan(&itemID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	item.ID = itemID
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
+}
+
+
+func getItem(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	itemID, err := strconv.Atoi(params["item_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var item Item
+	err = DB.QueryRow("SELECT id, name, description, image_url, task_id FROM items WHERE id = $1", itemID).Scan(&item.ID, &item.Name, &item.Description, &item.ImageURL, &item.TaskID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
+}
+
+
+func updateItem(w http.ResponseWriter, r *http.Request) {
+	params := mux.Vars(r)
+	itemID, err := strconv.Atoi(params["item_id"])
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	var item Item
+	err = json.NewDecoder(r.Body).Decode(&item)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	_, err = DB.Exec("UPDATE items SET name = $1, description = $2, image_url = $3, task_id = $4 WHERE id = $5",
+		item.Name, item.Description, item.ImageURL, item.TaskID, itemID)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+
+	item.ID = itemID
+
+	w.Header().Set("Content-Type", "application/json")
+	json.NewEncoder(w).Encode(item)
+}
+
